@@ -1,0 +1,2 @@
+# No external dependencies required.
+# This file ensures Nixpacks/Coolify recognizes the project as a Python application.
