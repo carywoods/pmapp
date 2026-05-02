@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import datetime
+import io
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -22,19 +23,28 @@ HTML_CONTENT = """<!DOCTYPE html>
     <title>Idea Census Registry</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
-        h1 { color: #fff; font-size: 1.5rem; margin-bottom: 10px; }
+        h1 { color: #fff; font-size: 1.5rem; margin-bottom: 10px; margin-top: 0; }
+        .navbar { display: flex; justify-content: space-between; align-items: center; background: #1f1f1f; padding: 15px 20px; margin: -20px -20px 20px -20px; border-bottom: 1px solid #333; flex-wrap: wrap; gap: 10px; }
+        .nav-links a { color: #aaa; text-decoration: none; margin-right: 20px; font-weight: bold; font-size: 14px; }
+        .nav-links a:hover, .nav-links a.active { color: #fff; border-bottom: 2px solid #2d5a27; padding-bottom: 5px; }
+        .nav-exports button { background: #2d5a27; border: 1px solid #3b7533; color: #fff; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; margin-left: 5px; transition: background 0.2s; }
+        .nav-exports button:hover { background: #3b7533; }
+        
+        .view { display: none; }
+        .view.active { display: block; }
+        
         .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
         input, select, button { padding: 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #fff; font-size: 14px; }
         input[type="text"] { flex-grow: 1; min-width: 200px; }
         button { cursor: pointer; background: #333; transition: background 0.2s; }
         button:hover { background: #555; }
-        .export-btn { background: #2d5a27; border-color: #3b7533; }
-        .export-btn:hover { background: #3b7533; }
+        
         table { width: 100%; border-collapse: collapse; font-size: 14px; }
         th, td { border: 1px solid #333; padding: 8px 12px; text-align: left; }
         th { background: #1f1f1f; position: sticky; top: 0; font-weight: 600; color: #aaa; text-transform: uppercase; font-size: 12px; }
         tr:nth-child(even) { background: #161616; }
         tr:hover { background: #2a2a2a; cursor: pointer; }
+        
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(2px); z-index: 100; }
         .modal-content { background: #1e1e1e; margin: 5% auto; padding: 25px; width: 90%; max-width: 700px; border-radius: 8px; max-height: 85vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5); border: 1px solid #333; }
         .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; }
@@ -43,6 +53,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         .form-group label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 13px; color: #aaa; }
         .form-group input, .form-group textarea { width: 100%; box-sizing: border-box; }
         .form-group textarea { height: 100px; resize: vertical; font-family: inherit; }
+        
         .stats { margin-bottom: 15px; font-size: 14px; color: #999; display: flex; gap: 15px; flex-wrap: wrap; background: #1a1a1a; padding: 10px 15px; border-radius: 4px; border: 1px solid #222; }
         .stats span { display: flex; align-items: center; }
         .stats b { color: #fff; margin-left: 5px; }
@@ -53,31 +64,68 @@ HTML_CONTENT = """<!DOCTYPE html>
         .btn-save:hover { background: #3b7533; }
         .btn-cancel { background: #444; }
         .btn-cancel:hover { background: #555; }
+
+        .upload-box { background: #1a1a1a; padding: 25px; border: 1px solid #333; border-radius: 6px; max-width: 600px; }
+        .upload-box h2 { margin-top: 0; margin-bottom: 20px; font-size: 1.2rem; }
+        .upload-box input[type="file"] { width: 100%; padding: 10px; background: #222; margin-bottom: 15px; border: 1px solid #444; border-radius: 4px; }
+        .upload-box select { width: 100%; padding: 10px; margin-bottom: 20px; font-size: 14px; }
+        .upload-box button { width: 100%; padding: 10px; background: #2d5a27; font-weight: bold; border-color: #3b7533; }
+        .upload-box button:hover { background: #3b7533; }
+        .summary-box { background: #162616; padding: 20px; border: 1px solid #2d5a27; border-radius: 6px; max-width: 600px; margin-top: 20px; color: #b0e0b0; }
+        .summary-box h3 { margin-top: 0; color: #fff; }
+        .summary-box ul { margin: 10px 0; padding-left: 20px; }
+        .summary-box li { margin-bottom: 5px; }
     </style>
 </head>
 <body>
-    <h1>Idea Census Registry</h1>
-    
-    <div class="stats" id="stats">
-        <span>Loading stats...</span>
+    <div class="navbar">
+        <div class="nav-links">
+            <a href="#" onclick="showView('registry')" id="nav-registry" class="active">Registry</a>
+            <a href="#" onclick="showView('upload')" id="nav-upload">Upload CSV</a>
+            <a href="#" onclick="openModal({}, true)">New IC Record</a>
+        </div>
+        <div class="nav-exports">
+            <button onclick="exportCSV()">Export CSV</button>
+            <button onclick="exportTSV()">Export TSV</button>
+            <button onclick="exportJSON()">Export JSON</button>
+        </div>
     </div>
 
-    <div class="controls">
-        <input type="text" id="searchInput" placeholder="Search everywhere...">
-        <select id="domainFilter"><option value="">All Domains</option></select>
-        <select id="statusFilter"><option value="">All Statuses</option></select>
-        <select id="priorityFilter"><option value="">All Priorities</option></select>
-        <select id="confidenceFilter"><option value="">All Confidences</option></select>
-        <button class="export-btn" onclick="exportCSV()">CSV Export</button>
-        <button class="export-btn" onclick="exportJSON()">JSON Export</button>
+    <div id="registryView" class="view active">
+        <h1>Idea Census Registry</h1>
+        <div class="stats" id="stats">
+            <span>Loading stats...</span>
+        </div>
+
+        <div class="controls">
+            <input type="text" id="searchInput" placeholder="Search everywhere...">
+            <select id="domainFilter"><option value="">All Domains</option></select>
+            <select id="statusFilter"><option value="">All Statuses</option></select>
+            <select id="priorityFilter"><option value="">All Priorities</option></select>
+            <select id="confidenceFilter"><option value="">All Confidences</option></select>
+        </div>
+
+        <table id="dataTable">
+            <thead>
+                <tr id="tableHead"></tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+        </table>
     </div>
 
-    <table id="dataTable">
-        <thead>
-            <tr id="tableHead"></tr>
-        </thead>
-        <tbody id="tableBody"></tbody>
-    </table>
+    <div id="uploadView" class="view">
+        <h1>Upload Registry</h1>
+        <div class="upload-box">
+            <h2>Import File</h2>
+            <input type="file" id="csvFileInput" accept=".csv, .tsv, text/csv, text/tab-separated-values">
+            <select id="uploadMode">
+                <option value="replace">Replace current registry</option>
+                <option value="merge">Merge into current registry by IC Number</option>
+            </select>
+            <button onclick="handleUpload()">Upload File</button>
+        </div>
+        <div id="uploadSummary" class="summary-box" style="display:none;"></div>
+    </div>
 
     <div id="editModal" class="modal">
         <div class="modal-content">
@@ -105,6 +153,15 @@ HTML_CONTENT = """<!DOCTYPE html>
         const displayColumns = [
             "IC Number", "Project", "Domain", "Status", "Priority", "Confidence", "First Seen"
         ];
+
+        function showView(viewId) {
+            document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.nav-links a').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById(viewId + 'View').classList.add('active');
+            const navItem = document.getElementById('nav-' + viewId);
+            if(navItem) navItem.classList.add('active');
+        }
 
         async function loadData() {
             try {
@@ -218,12 +275,26 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         let currentRecordId = null;
 
-        function openModal(row) {
-            currentRecordId = row["IC Number"];
-            document.getElementById('modalTitle').textContent = `Edit ${currentRecordId} - ${row["Project"] || 'Unknown'}`;
+        function openModal(row = {}, isNew = false) {
+            currentRecordId = isNew ? null : row["IC Number"];
+            document.getElementById('modalTitle').textContent = isNew ? "New IC Record" : `Edit ${currentRecordId} - ${row["Project"] || 'Unknown'}`;
             
             const form = document.getElementById('editForm');
             form.innerHTML = '';
+
+            if (isNew) {
+                const group = document.createElement('div');
+                group.className = 'form-group';
+                const label = document.createElement('label');
+                label.textContent = "IC Number (e.g. IC-000099)";
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.id = 'edit_IC_Number';
+                input.value = '';
+                group.appendChild(label);
+                group.appendChild(input);
+                form.appendChild(group);
+            }
 
             editableColumns.forEach(col => {
                 const group = document.createElement('div');
@@ -255,11 +326,20 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
 
         async function saveRecord() {
-            if (!currentRecordId) return;
+            let idToSave = currentRecordId;
+            if (!idToSave) {
+                const icInput = document.getElementById('edit_IC_Number');
+                if (!icInput || !icInput.value.trim()) {
+                    alert("IC Number is required for new records.");
+                    return;
+                }
+                idToSave = icInput.value.trim();
+            }
 
-            const updates = { "IC Number": currentRecordId };
+            const updates = { "IC Number": idToSave };
             editableColumns.forEach(col => {
-                updates[col] = document.getElementById('edit_' + col.replace(/\s+/g, '_')).value;
+                const el = document.getElementById('edit_' + col.replace(/\s+/g, '_'));
+                if (el) updates[col] = el.value;
             });
 
             try {
@@ -275,21 +355,77 @@ HTML_CONTENT = """<!DOCTYPE html>
                 }
                 
                 // Update local data
-                const idx = allData.findIndex(r => r["IC Number"] === currentRecordId);
+                const idx = allData.findIndex(r => r["IC Number"] === idToSave);
                 if (idx !== -1) {
                     allData[idx] = { ...allData[idx], ...updates };
+                } else {
+                    allData.push(updates); // Append if new
                 }
                 
                 closeModal();
+                populateFilters();
                 applyFilters();
-                // Brief flash to indicate saving success could be added here
             } catch (e) {
                 alert("Error saving: " + e.message);
             }
         }
 
+        async function handleUpload() {
+            const fileInput = document.getElementById('csvFileInput');
+            const mode = document.getElementById('uploadMode').value;
+            const summaryBox = document.getElementById('uploadSummary');
+            
+            if (!fileInput.files.length) {
+                alert("Please select a file first.");
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+            
+            reader.onload = async function(e) {
+                const content = e.target.result;
+                summaryBox.style.display = 'block';
+                summaryBox.innerHTML = "Uploading and processing...";
+                
+                try {
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ fileContent: content, mode: mode })
+                    });
+                    
+                    const result = await response.json();
+                    if (!response.ok || result.error) {
+                        summaryBox.innerHTML = `<span style="color:#ff5555;">Error: ${result.error || response.statusText}</span>`;
+                    } else {
+                        const s = result.summary;
+                        summaryBox.innerHTML = `
+                            <h3>Upload Successful</h3>
+                            <ul>
+                                <li>Rows imported: ${s.imported}</li>
+                                <li>Rows updated: ${s.updated}</li>
+                                <li>Rows added: ${s.added}</li>
+                                <li>Rows skipped (no valid ID): ${s.skipped}</li>
+                                <li>Backup created: ${s.backup_file || 'None'}</li>
+                            </ul>
+                            <button onclick="showView('registry'); loadData();" style="margin-top: 15px; padding: 8px 16px; background: #2d5a27; color: #fff; border: 1px solid #3b7533; border-radius: 4px; cursor: pointer;">Return to Registry</button>
+                        `;
+                    }
+                } catch (err) {
+                    summaryBox.innerHTML = `<span style="color:#ff5555;">Error: ${err.message}</span>`;
+                }
+            };
+            
+            reader.readAsText(file);
+        }
+
         function exportCSV() {
             window.location.href = '/api/export/csv';
+        }
+
+        function exportTSV() {
+            window.location.href = '/api/export/tsv';
         }
 
         function exportJSON() {
@@ -314,7 +450,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def read_csv(self):
         if not os.path.exists(CSV_FILE):
             return []
-        with open(CSV_FILE, 'r', encoding='utf-8') as f:
+        with open(CSV_FILE, 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
             return list(reader)
 
@@ -322,7 +458,6 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not data:
             return
             
-        # Collect all unique fieldnames to preserve unknown columns
         fieldnames = []
         for row in data:
             for k in row.keys():
@@ -360,6 +495,29 @@ class RequestHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
             else:
                 self.send_error(404, "CSV file not found")
+
+        elif parsed_path == '/api/export/tsv':
+            if os.path.exists(CSV_FILE):
+                data = self.read_csv()
+                self.send_response(200)
+                self.send_header('Content-Disposition', f'attachment; filename="idea_census_export_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.tsv"')
+                self.send_header('Content-type', 'text/tab-separated-values; charset=utf-8')
+                self.end_headers()
+                
+                if data:
+                    fieldnames = []
+                    for row in data:
+                        for k in row.keys():
+                            if k not in fieldnames:
+                                fieldnames.append(k)
+                    
+                    output = io.StringIO()
+                    writer = csv.DictWriter(output, fieldnames=fieldnames, delimiter='\t')
+                    writer.writeheader()
+                    writer.writerows(data)
+                    self.wfile.write(output.getvalue().encode('utf-8'))
+            else:
+                self.send_error(404, "CSV file not found")
                 
         elif parsed_path == '/api/export/json':
             data = self.read_csv()
@@ -387,7 +545,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                     self.send_error(400, "Missing IC Number")
                     return
                 
-                # Backup before saving
                 if os.path.exists(CSV_FILE):
                     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
                     backup_path = os.path.join(BACKUP_DIR, f"backup_{timestamp}.csv")
@@ -404,8 +561,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         break
                 
                 if not updated:
-                    self.send_error(404, "IC Number not found")
-                    return
+                    data.append(updates)
                 
                 self.write_csv(data)
                 
@@ -416,6 +572,115 @@ class RequestHandler(BaseHTTPRequestHandler):
                 
             except Exception as e:
                 self.send_error(500, str(e))
+                
+        elif parsed_path == '/api/upload':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            
+            try:
+                payload = json.loads(post_data.decode('utf-8'))
+                file_content = payload.get('fileContent', '')
+                mode = payload.get('mode', 'replace')
+                
+                if not file_content:
+                    self.send_response(400)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "File content is empty."}).encode('utf-8'))
+                    return
+                    
+                first_line = file_content.split('\n')[0]
+                delimiter = '\t' if '\t' in first_line and first_line.count('\t') >= first_line.count(',') else ','
+                
+                reader = csv.DictReader(io.StringIO(file_content), delimiter=delimiter)
+                rows = list(reader)
+                
+                if not rows:
+                    self.send_response(400)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "No data rows found in file."}).encode('utf-8'))
+                    return
+                    
+                id_col = None
+                for col in reader.fieldnames:
+                    if col and col.lower() in ['ic number', 'ic', 'id']:
+                        id_col = col
+                        break
+                        
+                if not id_col:
+                    self.send_response(400)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": f"No recognizable identifier column found. Expected one of: IC Number, IC, Id, ID."}).encode('utf-8'))
+                    return
+                    
+                processed_rows = []
+                skipped = 0
+                for r in rows:
+                    raw_id = r.get(id_col, '').strip()
+                    if not raw_id:
+                        skipped += 1
+                        continue
+                        
+                    if raw_id.isdigit():
+                        norm_id = f"IC-{int(raw_id):06d}"
+                    else:
+                        norm_id = raw_id
+                        
+                    r['IC Number'] = norm_id
+                    if id_col != 'IC Number':
+                        del r[id_col]
+                    processed_rows.append(r)
+                    
+                backup_file = None
+                current_data = []
+                if os.path.exists(CSV_FILE):
+                    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                    backup_file = f"backup_{timestamp}_pre_upload.csv"
+                    backup_path = os.path.join(BACKUP_DIR, backup_file)
+                    shutil.copy2(CSV_FILE, backup_path)
+                    
+                    with open(CSV_FILE, 'r', encoding='utf-8-sig') as f:
+                        current_data = list(csv.DictReader(f))
+                        
+                updated = 0
+                added = 0
+                imported = len(processed_rows)
+                
+                if mode == 'replace':
+                    self.write_csv(processed_rows)
+                    added = imported
+                else:
+                    current_dict = {row['IC Number']: row for row in current_data if row.get('IC Number')}
+                    for pr in processed_rows:
+                        ic = pr['IC Number']
+                        if ic in current_dict:
+                            current_dict[ic].update(pr)
+                            updated += 1
+                        else:
+                            current_dict[ic] = pr
+                            added += 1
+                    self.write_csv(list(current_dict.values()))
+                    
+                summary = {
+                    "imported": imported,
+                    "updated": updated,
+                    "added": added,
+                    "skipped": skipped,
+                    "backup_file": backup_file
+                }
+                
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "summary": summary}).encode('utf-8'))
+                
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
         else:
             self.send_error(404, "Not Found")
 
